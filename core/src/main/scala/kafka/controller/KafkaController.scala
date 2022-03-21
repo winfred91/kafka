@@ -45,19 +45,31 @@ import kafka.server._
 import kafka.common.TopicAndPartition
 
 class ControllerContext(val zkUtils: ZkUtils) {
+  // 集群间各borker通讯管理器
   var controllerChannelManager: ControllerChannelManager = null
+  // 互斥锁
   val controllerLock: ReentrantLock = new ReentrantLock()
+  // 正在关闭的broker ids
   var shuttingDownBrokerIds: mutable.Set[Int] = mutable.Set.empty
   val brokerShutdownLock: Object = new Object
+  // KafkaController的时代值，kafka集群每进行过一次controller选举这个值就加1
   var epoch: Int = KafkaController.InitialControllerEpoch - 1
+  // KafkaController时代值的zk版本号
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion - 1
+  // 集群中所有的topic集
   var allTopics: Set[String] = Set.empty
+  // 各个partition的AR集合（即partition的各副本所在的brokerId）
   var partitionReplicaAssignment: mutable.Map[TopicAndPartition, Seq[Int]] = mutable.Map.empty
+  // 各个partition的leader副本、isr副本以及KafkaController时代值
   var partitionLeadershipInfo: mutable.Map[TopicAndPartition, LeaderIsrAndControllerEpoch] = mutable.Map.empty
+  // 将要修改AR集合的分区，同时需要重新进行leader副本选举
   val partitionsBeingReassigned: mutable.Map[TopicAndPartition, ReassignedPartitionsContext] = new mutable.HashMap
+  // 需要进行leader副本选举的分区，并且直接使用AR集中第一个副本作为leader
   val partitionsUndergoingPreferredReplicaElection: mutable.Set[TopicAndPartition] = new mutable.HashSet
 
+  // 当前在线的broker集
   private var liveBrokersUnderlying: Set[Broker] = Set.empty
+  // 当前在线的broker id集
   private var liveBrokerIdsUnderlying: Set[Int] = Set.empty
 
   // setter
@@ -422,6 +434,7 @@ class KafkaController(val config: KafkaConfig, zkUtils: ZkUtils, val brokerState
    * 2. Even if we do refresh the cache, there is no guarantee that by the time the leader and ISR request reaches
    *    every broker that it is still valid.  Brokers check the leader epoch to determine validity of the request.
    */
+  // 新broker启动回调函数
   def onBrokerStartup(newBrokers: Seq[Int]) {
     info("New broker startup callback for %s".format(newBrokers.mkString(",")))
     val newBrokersSet = newBrokers.toSet
@@ -429,9 +442,11 @@ class KafkaController(val config: KafkaConfig, zkUtils: ZkUtils, val brokerState
     // broker via this update.
     // In cases of controlled shutdown leaders will not be elected when a new broker comes up. So at least in the
     // common controlled shutdown case, the metadata will reach the new brokers faster
+    // 向所有broker发送更新元数据请求。
     sendUpdateMetadataRequest(controllerContext.liveOrShuttingDownBrokerIds.toSeq)
     // the very first thing to do when a new broker comes up is send it the entire list of partitions that it is
     // supposed to host. Based on that the broker starts the high watermark threads for the input list of partitions
+    // 获取到新broker相关的分区副本集，再调用副本状态机的状态变更事件处理函数
     val allReplicasOnNewBrokers = controllerContext.replicasOnBrokers(newBrokersSet)
     replicaStateMachine.handleStateChanges(allReplicasOnNewBrokers, OnlineReplica)
     // when a new broker comes up, the controller needs to trigger leader election for all new and offline partitions
